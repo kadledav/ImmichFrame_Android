@@ -116,6 +116,7 @@ class MainActivity : AppCompatActivity() {
     }
     private var isShowingFirst = true
     private var zoomAnimator: ObjectAnimator? = null
+    private var webViewLoadJob: Job? = null
 
     private val settingsLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -530,6 +531,8 @@ class MainActivity : AppCompatActivity() {
         showCurrentDate = prefs.getBoolean("showCurrentDate", true)
         var savedUrl = prefs.getString("webview_url", "") ?: ""
         useWebView = prefs.getBoolean("useWebView", true)
+        val playAudio = prefs.getBoolean("playAudio", false)
+        val videoVolume = prefs.getInt("videoVolume", 100)
         val authSecret = prefs.getString("authSecret", "") ?: ""
         val settingsLock = prefs.getBoolean("settingsLock", false)
         val activeTimes = prefs.getBoolean("activeTimes", false)
@@ -581,6 +584,16 @@ class MainActivity : AppCompatActivity() {
                     return false
                 }
 
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
+                    if (url?.startsWith("http") == true) {
+                        view?.evaluateJavascript(
+                            if (playAudio) Helpers.unmuteVideoJs(videoVolume) else Helpers.RESTORE_MUTE_JS,
+                            null
+                        )
+                    }
+                }
+
                 override fun onReceivedError(
                     view: WebView?,
                     request: WebResourceRequest?,
@@ -591,13 +604,13 @@ class MainActivity : AppCompatActivity() {
                     if (request?.isForMainFrame == true && error != null) {
                         view?.loadUrl("file:///android_asset/error_page.html")
 
-                        Handler(Looper.getMainLooper()).postDelayed({
+                        handler.postDelayed({
                             val errorCode = error.errorCode
                             val errorDescription = error.description.toString().replace("'", "\\'")
                             view?.evaluateJavascript("showError('$errorCode', '$errorDescription')", null)
                         }, 500)
                     }
-                    Handler(Looper.getMainLooper()).postDelayed({
+                    handler.postDelayed({
                         //check url again in case the user has changed it
                         var currentUrl = prefs.getString("webview_url", "")?.trim() ?: ""
                         currentUrl = if (authSecret.isNotEmpty()) {
@@ -609,13 +622,14 @@ class MainActivity : AppCompatActivity() {
                         } else {
                             currentUrl
                         }
-                        if (currentUrl.isNotEmpty()) {
+                        if (isFrameInactive != true && currentUrl.isNotEmpty()) {
                             webView.loadUrl(currentUrl)
                         }
                     }, 5000)
                 }
             }
             webView.settings.javaScriptEnabled = true
+            webView.settings.mediaPlaybackRequiresUserGesture = !playAudio
             webView.settings.cacheMode = WebSettings.LOAD_NO_CACHE
             webView.settings.domStorageEnabled = true
             loadWebViewWithRetry(savedUrl)
@@ -860,6 +874,7 @@ class MainActivity : AppCompatActivity() {
             stopImageTimer()
             stopWeatherTimer()
             if (useWebView) {
+                webViewLoadJob?.cancel()
                 webView.loadUrl("about:blank")
             }
             dimOverlay.apply {
@@ -1017,9 +1032,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onPause() {
+        super.onPause()
+        webView.onPause()
+    }
+
     override fun onResume() {
         super.onResume()
         hideSystemUI()
+        webView.onResume()
         // Re-evaluate the schedule whenever the activity returns to the foreground. This is
         // essential when the wake alarm brings an already-running instance forward (which does
         // not re-run onCreate), so the screen powers on immediately instead of waiting for the
@@ -1048,7 +1069,7 @@ class MainActivity : AppCompatActivity() {
         attempt: Int = 1,
         maxAttempts: Int = 36
     ) {
-        lifecycleScope.launch {
+        webViewLoadJob = lifecycleScope.launch {
             val reachable = withContext(Dispatchers.IO) {
                 Helpers.isServerReachable(url)
             }

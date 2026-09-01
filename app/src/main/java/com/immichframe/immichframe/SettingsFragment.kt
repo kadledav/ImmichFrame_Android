@@ -15,6 +15,7 @@ import androidx.preference.EditTextPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.PreferenceManager
+import androidx.preference.SeekBarPreference
 import androidx.preference.SwitchPreferenceCompat
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.text.DateFormatSymbols
@@ -24,6 +25,8 @@ class SettingsFragment : PreferenceFragmentCompat() {
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         setPreferencesFromResource(R.xml.settings_view, rootKey)
         val chkUseWebView = findPreference<SwitchPreferenceCompat>("useWebView")
+        val chkPlayAudio = findPreference<SwitchPreferenceCompat>("playAudio")
+        val seekVideoVolume = findPreference<SeekBarPreference>("videoVolume")
         val chkBlurredBackground = findPreference<SwitchPreferenceCompat>("blurredBackground")
         val chkShowCurrentDate = findPreference<SwitchPreferenceCompat>("showCurrentDate")
         val chkActiveTimes = findPreference<SwitchPreferenceCompat>("activeTimes")
@@ -37,8 +40,14 @@ class SettingsFragment : PreferenceFragmentCompat() {
             editText.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
 
+        fun updateAudioVisibility(useWebView: Boolean, playAudio: Boolean) {
+            chkPlayAudio?.isVisible = useWebView
+            seekVideoVolume?.isVisible = useWebView && playAudio
+        }
+
         // Update visibility based on switches
         val useWebView = chkUseWebView?.isChecked ?: false
+        updateAudioVisibility(useWebView, chkPlayAudio?.isChecked ?: false)
         chkBlurredBackground?.isVisible = !useWebView
         chkShowCurrentDate?.isVisible = !useWebView
         val activeTimes = chkActiveTimes?.isChecked ?: false
@@ -50,9 +59,14 @@ class SettingsFragment : PreferenceFragmentCompat() {
         // React to changes
         chkUseWebView?.setOnPreferenceChangeListener { _, newValue ->
             val value = newValue as Boolean
+            updateAudioVisibility(value, chkPlayAudio?.isChecked ?: false)
             chkBlurredBackground?.isVisible = !value
             chkShowCurrentDate?.isVisible = !value
             //add android settings button
+            true
+        }
+        chkPlayAudio?.setOnPreferenceChangeListener { _, newValue ->
+            updateAudioVisibility(chkUseWebView?.isChecked ?: false, newValue as Boolean)
             true
         }
         chkActiveTimes?.setOnPreferenceChangeListener { _, newValue ->

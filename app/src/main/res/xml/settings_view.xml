@@ -1,4 +1,5 @@
-<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
 
     <PreferenceCategory android:title="Connection Settings">
         <EditTextPreference
@@ -17,6 +18,16 @@
             android:defaultValue="true"
             android:key="useWebView"
             android:title="Use WebView?" />
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
+            android:key="playAudio"
+            android:title="Enable Audio for Video?" />
+        <SeekBarPreference
+            android:defaultValue="100"
+            android:key="videoVolume"
+            android:max="100"
+            android:title="Video Volume (%)"
+            app:showSeekBarValue="true" />
         <SwitchPreferenceCompat
             android:defaultValue="false"
             android:key="blurredBackground"

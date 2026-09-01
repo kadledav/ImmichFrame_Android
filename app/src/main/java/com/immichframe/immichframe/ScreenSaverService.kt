@@ -6,6 +6,7 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
@@ -90,6 +91,7 @@ class ScreenSaverService : DreamService() {
         webViewRetryScope = CoroutineScope(Dispatchers.Main + Job())
         isFullscreen = true
         isInteractive = true
+        window?.volumeControlStream = AudioManager.STREAM_MUSIC
         setContentView(R.layout.screen_saver_view)
         webView = findViewById(R.id.webView)
         webView.setBackgroundColor(Color.BLACK)
@@ -113,8 +115,17 @@ class ScreenSaverService : DreamService() {
         webViewRetryScope?.cancel()
         webViewRetryScope = null
         stopImageTimer()
+        webView.loadUrl("about:blank")
+        webView.onPause()
         releaseWakeLock()
         handler.removeCallbacksAndMessages(null)
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        if (::webView.isInitialized) {
+            webView.destroy()
+        }
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -127,6 +138,11 @@ class ScreenSaverService : DreamService() {
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
                     nextAction()
                     return true
+                }
+                KeyEvent.KEYCODE_VOLUME_UP,
+                KeyEvent.KEYCODE_VOLUME_DOWN,
+                KeyEvent.KEYCODE_VOLUME_MUTE,
+                KeyEvent.KEYCODE_MUTE -> {
                 }
                 else -> {
                     finish()
@@ -466,6 +482,8 @@ class ScreenSaverService : DreamService() {
         showCurrentDate = prefs.getBoolean("showCurrentDate", true)
         var savedUrl = prefs.getString("webview_url", "") ?: ""
         useWebView = prefs.getBoolean("useWebView", true)
+        val playAudio = prefs.getBoolean("playAudio", false)
+        val videoVolume = prefs.getInt("videoVolume", 100)
         val authSecret = prefs.getString("authSecret", "") ?: ""
 
         webView.visibility = if (useWebView) View.VISIBLE else View.GONE
@@ -501,6 +519,16 @@ class ScreenSaverService : DreamService() {
                     return false
                 }
 
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
+                    if (url?.startsWith("http") == true) {
+                        view?.evaluateJavascript(
+                            if (playAudio) Helpers.unmuteVideoJs(videoVolume) else Helpers.RESTORE_MUTE_JS,
+                            null
+                        )
+                    }
+                }
+
                 override fun onReceivedError(
                     view: WebView?,
                     request: WebResourceRequest?,
@@ -511,18 +539,19 @@ class ScreenSaverService : DreamService() {
                     if (request?.isForMainFrame == true && error != null) {
                         view?.loadUrl("file:///android_asset/error_page.html")
 
-                        Handler(Looper.getMainLooper()).postDelayed({
+                        handler.postDelayed({
                             val errorCode = error.errorCode
                             val errorDescription = error.description.toString().replace("'", "\\'")
                             view?.evaluateJavascript("showError('$errorCode', '$errorDescription')", null)
                         }, 500)
                     }
-                    Handler(Looper.getMainLooper()).postDelayed({
+                    handler.postDelayed({
                         webView.loadUrl(savedUrl)
                     }, 5000)
                 }
             }
             webView.settings.javaScriptEnabled = true
+            webView.settings.mediaPlaybackRequiresUserGesture = !playAudio
             webView.settings.cacheMode = WebSettings.LOAD_NO_CACHE
             webView.settings.domStorageEnabled = true
             loadWebViewWithRetry(savedUrl)

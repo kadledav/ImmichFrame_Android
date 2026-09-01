@@ -19,6 +19,69 @@ import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
 object Helpers {
+    // The direct <video> handling unmutes non-kiosk pages and applies the volume everywhere;
+    // the 'play' capture listener re-applies both whenever any video starts, which also covers
+    // videos swapped in later by the page. Immich Kiosk re-applies its own mute state to each
+    // video, so when its JS API (window.immichKiosk.video.setMuted) is present it is also
+    // called to align that state; if the API is absent or changes, only that alignment is lost.
+    // video.volume is unreliable on Android Chromium (media volume is tied to the system
+    // stream), so attenuation below 100 % goes through a Web Audio gain node; that requires
+    // same-origin media, hence the try/catch (cross-origin pages fall back to full volume).
+    fun unmuteVideoJs(volumePercent: Int): String = """
+        (function() {
+            if (window.__immichFrameUnmute) return;
+            window.__immichFrameUnmute = true;
+            var volume = ${volumePercent.coerceIn(0, 100)} / 100;
+            var audioCtx = null;
+            function attachGain(v) {
+                if (volume >= 1 || v.__immichFrameGain) return;
+                try {
+                    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+                    var source = audioCtx.createMediaElementSource(v);
+                    var gain = audioCtx.createGain();
+                    gain.gain.value = volume;
+                    source.connect(gain);
+                    gain.connect(audioCtx.destination);
+                    v.__immichFrameGain = gain;
+                } catch (e) {}
+            }
+            function apply(v) {
+                v.muted = false;
+                v.volume = volume;
+                attachGain(v);
+                if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+            }
+            document.querySelectorAll('video').forEach(apply);
+            document.addEventListener('play', function(e) {
+                if (e.target && e.target.tagName === 'VIDEO') apply(e.target);
+            }, true);
+            var attempts = 0;
+            // kiosk initializes its JS asynchronously after page load, hence the polling
+            (function tryKiosk() {
+                if (window.immichKiosk && window.immichKiosk.video && window.immichKiosk.video.setMuted) {
+                    window.immichKiosk.video.setMuted(false);
+                } else if (++attempts < 20) {
+                    setTimeout(tryKiosk, 500);
+                }
+            })();
+        })();
+    """.trimIndent()
+
+    // Undoes the kiosk unmute persisted in the page's localStorage once audio is disabled
+    // again; a no-op on pages without the kiosk API.
+    val RESTORE_MUTE_JS = """
+        (function() {
+            var attempts = 0;
+            (function tryKiosk() {
+                if (window.immichKiosk && window.immichKiosk.video && window.immichKiosk.video.setMuted) {
+                    window.immichKiosk.video.setMuted(true);
+                } else if (++attempts < 20) {
+                    setTimeout(tryKiosk, 500);
+                }
+            })();
+        })();
+    """.trimIndent()
+
     fun cssFontSizeToSp(cssSize: String?, context: Context, baseFontSizePx: Float = 16f): Float {
         val resources = context.resources
         val displayMetrics = resources.displayMetrics
