@@ -19,6 +19,49 @@ import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
 object Helpers {
+    // The direct <video> handling unmutes non-kiosk pages; the 'play' capture listener
+    // re-applies it whenever any video starts, which also covers videos swapped in later by
+    // the page. Immich Kiosk re-applies its own mute state to each video, so when its JS API
+    // (window.immichKiosk.video.setMuted) is present it is also called to align that state;
+    // if the API is absent or changes, only that alignment is lost.
+    val UNMUTE_VIDEO_JS = """
+        (function() {
+            if (window.__immichFrameUnmute) return;
+            window.__immichFrameUnmute = true;
+            function apply(v) {
+                v.muted = false;
+            }
+            document.querySelectorAll('video').forEach(apply);
+            document.addEventListener('play', function(e) {
+                if (e.target && e.target.tagName === 'VIDEO') apply(e.target);
+            }, true);
+            var attempts = 0;
+            // kiosk initializes its JS asynchronously after page load, hence the polling
+            (function tryKiosk() {
+                if (window.immichKiosk && window.immichKiosk.video && window.immichKiosk.video.setMuted) {
+                    window.immichKiosk.video.setMuted(false);
+                } else if (++attempts < 20) {
+                    setTimeout(tryKiosk, 500);
+                }
+            })();
+        })();
+    """.trimIndent()
+
+    // Undoes the kiosk unmute persisted in the page's localStorage once audio is disabled
+    // again; a no-op on pages without the kiosk API.
+    val RESTORE_MUTE_JS = """
+        (function() {
+            var attempts = 0;
+            (function tryKiosk() {
+                if (window.immichKiosk && window.immichKiosk.video && window.immichKiosk.video.setMuted) {
+                    window.immichKiosk.video.setMuted(true);
+                } else if (++attempts < 20) {
+                    setTimeout(tryKiosk, 500);
+                }
+            })();
+        })();
+    """.trimIndent()
+
     fun cssFontSizeToSp(cssSize: String?, context: Context, baseFontSizePx: Float = 16f): Float {
         val resources = context.resources
         val displayMetrics = resources.displayMetrics

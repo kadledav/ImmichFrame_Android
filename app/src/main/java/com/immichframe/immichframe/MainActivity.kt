@@ -13,6 +13,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -25,6 +26,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
@@ -116,6 +118,16 @@ class MainActivity : AppCompatActivity() {
     }
     private var isShowingFirst = true
     private var zoomAnimator: ObjectAnimator? = null
+    private var webViewLoadJob: Job? = null
+
+    // With audio enabled the page must not stay loaded while the activity is hidden: a paused
+    // WebView still runs the page's scripts, so the slideshow would start its next video and
+    // the sound would play over whatever else is on screen. The page is therefore unloaded in
+    // onStop and loaded again in onStart. Without audio it is left running, as before.
+    private var playAudio = false
+    private var isStopped = false
+    private var webPageUrl: String? = null
+    private var webPageDeferred = false
 
     private val settingsLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -130,6 +142,8 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Volume buttons must act on media (not the ringer) so they can undo "Mute TV on Start"
+        volumeControlStream = AudioManager.STREAM_MUSIC
         setContentView(R.layout.main_view)
         hideSystemUI()
 
@@ -530,6 +544,7 @@ class MainActivity : AppCompatActivity() {
         showCurrentDate = prefs.getBoolean("showCurrentDate", true)
         var savedUrl = prefs.getString("webview_url", "") ?: ""
         useWebView = prefs.getBoolean("useWebView", true)
+        playAudio = prefs.getBoolean("playAudio", false)
         val authSecret = prefs.getString("authSecret", "") ?: ""
         val settingsLock = prefs.getBoolean("settingsLock", false)
         val activeTimes = prefs.getBoolean("activeTimes", false)
@@ -581,6 +596,16 @@ class MainActivity : AppCompatActivity() {
                     return false
                 }
 
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
+                    if (url?.startsWith("http") == true) {
+                        view?.evaluateJavascript(
+                            if (playAudio) Helpers.UNMUTE_VIDEO_JS else Helpers.RESTORE_MUTE_JS,
+                            null
+                        )
+                    }
+                }
+
                 override fun onReceivedError(
                     view: WebView?,
                     request: WebResourceRequest?,
@@ -591,13 +616,13 @@ class MainActivity : AppCompatActivity() {
                     if (request?.isForMainFrame == true && error != null) {
                         view?.loadUrl("file:///android_asset/error_page.html")
 
-                        Handler(Looper.getMainLooper()).postDelayed({
+                        handler.postDelayed({
                             val errorCode = error.errorCode
                             val errorDescription = error.description.toString().replace("'", "\\'")
                             view?.evaluateJavascript("showError('$errorCode', '$errorDescription')", null)
                         }, 500)
                     }
-                    Handler(Looper.getMainLooper()).postDelayed({
+                    handler.postDelayed({
                         //check url again in case the user has changed it
                         var currentUrl = prefs.getString("webview_url", "")?.trim() ?: ""
                         currentUrl = if (authSecret.isNotEmpty()) {
@@ -609,17 +634,22 @@ class MainActivity : AppCompatActivity() {
                         } else {
                             currentUrl
                         }
-                        if (currentUrl.isNotEmpty()) {
-                            webView.loadUrl(currentUrl)
+                        if (isFrameInactive != true && currentUrl.isNotEmpty()) {
+                            showWebPage(currentUrl, checkReachable = false)
                         }
                     }, 5000)
                 }
             }
             webView.settings.javaScriptEnabled = true
+            webView.settings.mediaPlaybackRequiresUserGesture = !playAudio
             webView.settings.cacheMode = WebSettings.LOAD_NO_CACHE
             webView.settings.domStorageEnabled = true
-            loadWebViewWithRetry(savedUrl)
+            showWebPage(savedUrl)
         } else {
+            // The WebView is only hidden in this mode, so a page left over from WebView mode
+            // would keep running (and playing sound) behind the native view.
+            webPageUrl = null
+            unloadWebPage()
             retrofit = Helpers.createRetrofit(savedUrl, authSecret)
             apiService = retrofit!!.create(Helpers.ApiService::class.java)
             getServerSettings(
@@ -860,7 +890,7 @@ class MainActivity : AppCompatActivity() {
             stopImageTimer()
             stopWeatherTimer()
             if (useWebView) {
-                webView.loadUrl("about:blank")
+                unloadWebPage()
             }
             dimOverlay.apply {
                 visibility = View.VISIBLE
@@ -1017,9 +1047,38 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        StartMute.acquire(this)
+        isStopped = false
+        if (webPageDeferred) {
+            webPageDeferred = false
+            val url = webPageUrl
+            if (useWebView && isFrameInactive != true && url != null) {
+                showWebPage(url)
+            }
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        StartMute.release(this)
+        isStopped = true
+        if (useWebView && playAudio && isFrameInactive != true) {
+            unloadWebPage()
+            webPageDeferred = true
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        webView.onPause()
+    }
+
     override fun onResume() {
         super.onResume()
         hideSystemUI()
+        webView.onResume()
         // Re-evaluate the schedule whenever the activity returns to the foreground. This is
         // essential when the wake alarm brings an already-running instance forward (which does
         // not re-run onCreate), so the screen powers on immediately instead of waiting for the
@@ -1041,6 +1100,31 @@ class MainActivity : AppCompatActivity() {
         rcpServer.stop()
         unregisterReceiver(screenStateReceiver)
         handler.removeCallbacksAndMessages(null)
+        // A WebView outlives its activity until it is destroyed, and its page keeps running.
+        webViewLoadJob?.cancel()
+        (webView.parent as? ViewGroup)?.removeView(webView)
+        webView.destroy()
+    }
+
+    // Shows the frame's page, or only remembers it while the page has to stay unloaded (see
+    // playAudio); onStart loads it then.
+    private fun showWebPage(url: String, checkReachable: Boolean = true) {
+        webPageUrl = url
+        webViewLoadJob?.cancel()
+        if (isStopped && playAudio) {
+            webPageDeferred = true
+            return
+        }
+        if (checkReachable) {
+            loadWebViewWithRetry(url)
+        } else {
+            webView.loadUrl(url)
+        }
+    }
+
+    private fun unloadWebPage() {
+        webViewLoadJob?.cancel()
+        webView.loadUrl("about:blank")
     }
 
     private fun loadWebViewWithRetry(
@@ -1048,7 +1132,7 @@ class MainActivity : AppCompatActivity() {
         attempt: Int = 1,
         maxAttempts: Int = 36
     ) {
-        lifecycleScope.launch {
+        webViewLoadJob = lifecycleScope.launch {
             val reachable = withContext(Dispatchers.IO) {
                 Helpers.isServerReachable(url)
             }

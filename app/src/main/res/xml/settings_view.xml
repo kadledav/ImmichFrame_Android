@@ -19,6 +19,15 @@
             android:title="Use WebView?" />
         <SwitchPreferenceCompat
             android:defaultValue="false"
+            android:key="playAudio"
+            android:title="Enable Audio for Video?" />
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
+            android:key="muteOnStart"
+            android:summary="Starts muted; press a volume button to hear the audio"
+            android:title="Mute TV on Start?" />
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
             android:key="blurredBackground"
             android:title="Blurred Background?" />
         <SwitchPreferenceCompat
